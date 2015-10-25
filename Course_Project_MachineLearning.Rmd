@@ -1,0 +1,148 @@
+---
+output: html_document
+---
+# **Personal Activity Prediction Model** #
+
+
+##1.0 SYNOPSIS ##
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, the goal of this report is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants, and predict the manner in which they did the exercise. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. per Gallon (MPG) amongst the cars.  A statistical assessment was carried out, and it is concluded the manual tranmission is marginally better than automatic transmission. 
+
+##2.0 EXPLORATORY ANALYSIS ON DATA##
+Two datasets are provided, within the current report they are designated as the training master dataset and the validation datset. The training master data set is cleaned and prepared, and then partitioned to training and test dataset for model building and testing.  The final model is then applied to the validation dataset provided.
+
+``` {r setoptions, echo=FALSE, warning=FALSE}
+set.seed(19622)
+library(knitr)
+library(caret)
+library(ggplot2)
+library(rattle)
+library(randomForest)
+library(gridExtra)
+opts_chunk$set(echo=TRUE,cache=FALSE)
+```
+
+### *2.1 Reading and Cleaning Input Data* ###
+
+``` {r ReadCleanPartition, echo=TRUE, fig.height=3, fig.width=4}
+# Read the raw data (Master Training dataset and Validation dataset)
+ReadRawTrgData<- read.csv("pml-training.csv",na.strings=c("","NA","NULL","#DIV/0!"))
+ReadRawValidationData<- read.csv("pml-testing.csv",na.strings=c("","NA","NULL","#DIV/0!"))
+
+# Remove majority of NA
+CleanTrgData<- ReadRawTrgData[,colSums(is.na(ReadRawTrgData))==0]
+# Remove the first 7 variables as they are references to user, timestamp and the windows
+Subset1TrgData<-CleanTrgData[,-(1:7)]
+
+# Check for nearzero Var
+NearZero <- nearZeroVar(Subset1TrgData[,1:52])
+CountNearZero <- length(NearZero) 
+
+# Check for Strongly Correlated Variables (Correlation Coeff > 0.75)
+CorrMatrix<- abs(cor(Subset1TrgData[,1:52]))
+DropStrongCorrCols<- findCorrelation(CorrMatrix,cutoff=0.75,verbose=FALSE)
+
+# Now we have a cleaned master training dataset for building the model
+Training.Dataset<- Subset1TrgData[,-DropStrongCorrCols]
+
+# Now Partition the master training dataset
+inTrain <- createDataPartition(y=Training.Dataset$classe, p=0.7, list=FALSE)
+Training <- Training.Dataset[inTrain,]
+Testing <- Training.Dataset[-inTrain,]
+```
+
+It is found that there are a total of **`r dim(ReadRawTrgData)[2]`** columns.  By removing those columns having "NA" values, and also the first 7 columns, which are the data description columns and time stamps, the total number of variables (or columns) is **`r dim(Subset1TrgData)[2]`**. The total number of rows in the training dataset is **`r dim(Subset1TrgData)[1]`**.
+
+In addition there are **`r CountNearZero`** columns with near zero variation.  Further, with eliminating variables which are strongly correlated, we get a total of **`r dim(Training.Dataset)[2] -1`** predictors.
+
+Finally, the master training dataset is partitioned into test and training sets to develop and test the models to be built, before applying the same on the validation dataset.  The number of rows in the training dataset is **`r dim(Training)[1]`** and the number of rows in the testing dataset is **`r dim(Testing)[1]`**.
+
+### *2.2 Data Exploration* ###
+
+The accelerometers are on the belt, arm, forearm and the dumbbell.  Feature plots were generated to understand the relationship of the selected variables, two examples of the feature plots are shown below (Belt and dumbbell).
+```{r GraphKeyVar, warning=FALSE,fig.width=6, fig.height=5}
+# Generate feature plots using caret package.
+BeltColumns <- grep("belt",names(Training))
+DumbbellColumns <- grep("dumbbell",names(Training))
+BCGraph<-featurePlot(x=Training[,BeltColumns],y=Training$classe,plot="pairs",alpha=.1, main="Accelerometer on Belt")
+DCGraph<-featurePlot(x=Training[,DumbbellColumns],y=Training$classe,plot="pairs",alpha=.1, main="Accelerometer on Dumbbell")
+
+# Use gridExtra package to arrange the above generated plots
+grid.arrange(BCGraph, DCGraph, ncol=2)
+```                                       
+
+From the above plots, there are some variables that have reasonable correlation, and using principal component analysis may be a good option to use in conjunction with any model fitting approach.
+
+##3.0 BUILDING MODELS##
+From the exploratory analysis carried out in the previous section, Recursive partitioning is attempted first, and it is followed by using principal component analysis to pre-process with PCA to build a second model.
+
+### *3.1 Recursive Partitioning and Regression Trees (rpart)* ###
+
+``` {r FirstModel, echo=TRUE, fig.height=3, fig.width=4}
+# Build the First Model - Recursive Partitioning and Regression Treees (rpart)
+modFit<- train(classe ~., data=Training, method="rpart")
+print(modFit$finalModel)
+
+#Verify the goodness of the model
+Training.Prediction=predict(modFit,Training)
+Prediction.Matrix = with(Training,table(Training.Prediction,Training$classe))
+Prediction.Accuracy <-sum(diag(Prediction.Matrix))/sum(as.vector(Prediction.Matrix))
+Rpart.Output<-confusionMatrix(Training$classe, predict(modFit, Training))
+Rpart.Output$table
+
+#Plot using rattle.
+fancyRpartPlot(modFit$finalModel)
+```
+
+The prediction accuracy of the model is **`r Prediction.Accuracy`**. It is very poor.  Given the above observation, an attempt is made to improve the model by adopting the Principal Component Analysis approach.
+
+
+``` {r ImprovedModel, echo=TRUE, fig.height=3, fig.width=4}
+
+# Build model, with pre-processing using Principal Component Analysis (pca)
+PreProc <- preProcess(Training[, -32], method = "pca", thresh = 0.99)
+TrainPCA <- predict(PreProc, Training[, -32])
+modFitPCA<- train(Training$classe ~., data=TrainPCA, method="rpart")
+print(modFitPCA$finalModel)
+
+#Verify the goodness of the model
+Training.PredictionPCA=predict(modFitPCA,TrainPCA)
+Prediction.MatrixPCA = with(TrainPCA,table(Training.PredictionPCA,Training$classe))
+Prediction.AccuracyPCA <-sum(diag(Prediction.MatrixPCA))/sum(as.vector(Prediction.MatrixPCA))
+Rpart.Output.PCA<-confusionMatrix(Training$classe, predict(modFitPCA, TrainPCA))
+```
+
+The use of PCA does not improve the model for the better, and therefore, it is decided to adopt the random forest model for prediction.
+
+### *3.2 Random Forest Model* ###
+
+``` {r FinalModel, echo=TRUE, fig.height=3, fig.width=4, cache=TRUE}
+
+modFitRF<- train(Training$classe ~., data=Training, method="rf")
+print(modFitRF$finalModel)
+
+```
+
+Now test the model against the testing data set, for **cross-validation and out of sample errors**.
+``` {r TestingModel, echo=TRUE, fig.height=3, fig.width=4, cache=TRUE}
+confusionMatrix(Testing$classe, predict(modFitRF, Testing))
+
+```
+
+From the above table, it can be see that the accuracy is **99.03%**. 
+   
+###*3.3 Validation*###
+
+Now apply the model to the validation dataset, and report the prediction.
+
+```{r Validation, echo=TRUE }
+# Apply the model to the Validation dataset.
+predict(modFitRF, ReadRawValidationData)
+```
+
+## 4.0 CONCLUSIONS ##
+
+A model for predicting the activity, persons do based on the accelerometer data is developed.  The model adopted the random forest technique for classification, and it was found to be very accurate.  The model was validated against a validation dataset, and the results from such validation has been reported. 
+
+## 5.0 REFERENCE ##
+
+Data source taken from (http://groupware.les.inf.puc-rio.br/har)
